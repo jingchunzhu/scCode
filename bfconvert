@@ -1,0 +1,2 @@
+export BF_MAX_MEM=26000m
+~/bftools/bfconvert H33_Scan1.qptiff H33_Scan1.tiff 

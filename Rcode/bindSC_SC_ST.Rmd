@@ -1,0 +1,980 @@
+---
+title: "scBind_SC_ST"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dirname(getwd()))
+```
+
+# Intro
+
+BiCCA
+
+<https://htmlpreview.github.io/?https://github.com/KChen-lab/bindSC/blob/master/vignettes/SC_ST/SC_ST.html>
+
+Seurat Integration
+
+<https://satijalab.org/seurat/archive/v3.2/spatial_vignette.html>
+
+<https://satijalab.org/seurat/archive/v3.0/integration.html>
+
+<https://satijalab.org/seurat/articles/integration_introduction.html>
+
+Deconvolution
+
+<https://nbisweden.github.io/workshop-scRNAseq/labs/compiled/seurat/seurat_07_spatial.html#Deconvolution>
+
+Seurat SCT normalization
+
+<https://satijalab.org/seurat/articles/sctransform_vignette.html>
+
+# Article
+
+<https://www.biorxiv.org/content/10.1101/2020.12.11.422014v1.full>
+
+# Notes
+
+1.  regress mitochondria content does not seems to change the data transfer results much
+2.  Normalization by NormalizeData (scaling+log) or SCT does not seems to change the data transfer results much
+3.  Seurat TransferData: really important to use features from the integration method.
+4.  The RNA-RNA gene expression imputation is generally much better using Seurat than bind SC.
+5.  Although bindSC can impute all gene expression, it is unclear if these imputation can be trusted
+6.  For t-cycIf + scRNAseq, using log transformed, but not scaled data seems to work much better
+
+# Library
+
+```{r echo=FALSE, message=FALSE}
+library(Seurat)
+library(sctransform)
+library(bindSC)
+```
+
+# Parameters
+
+```{r}
+mito = 0 # mitochondria regression
+n_components = 3
+SCT = 0 # normalization SCT =0 is NormalizeData
+```
+
+# Functions ---
+
+## Function - co-embedding double plot
+
+```{r}
+# assumption: in the umap_3D matrix, cat1 rows, followed by cat2 rows
+double_plot <- function(umap_3D, cat1, cat2, source1, source2) {
+  cat1_label = levels(source1)[1]
+  cat2_label = levels(source2)[1]
+  
+  umap_plt  <- data.frame("UMAP1"=umap_3D[,1],
+                          "UMAP2"=umap_3D[,2],
+                          "cell_annotation" = c(cat1, cat2),
+                          "data_source" = c(rep(cat1_label, length(source1)), 
+                                            rep(cat2_label, length(source2))))
+  
+
+  xlim <- c(min(umap_plt$UMAP1), max(umap_plt$UMAP1))
+  ylim <- c(min(umap_plt$UMAP2), max(umap_plt$UMAP2))
+  
+  p11 <- UMAP_plot(meta = umap_plt[umap_plt$data_source==cat1_label,], 
+                   mylabel = paletteDiscrete(umap_plt$cell_annotation), 
+                   alpha=1, color = "cell_annotation", xlim = xlim, ylim = ylim) + ggtitle(cat1_label)
+  
+  p12 <- UMAP_plot(meta = umap_plt[umap_plt$data_source==cat2_label,], 
+                   mylabel=paletteDiscrete(umap_plt$cell_annotation),
+                  alpha = 1, color = "cell_annotation", xlim = xlim, ylim = ylim) + ggtitle(cat2_label)
+
+  ggarrange(p11,p12, ncol=2)
+}
+```
+
+## Function - save co-embedding cohort data (umap3D, data source, cell annotation)
+
+```{r}
+# assumption: in the umap_3D matrix, cat1 rows, followed by cat2 rows
+save_coembedding <- function(umap_3D, cat1, cat2, source1, source2, prefix="") {
+  cat1_label = levels(source1)[1]
+  cat2_label = levels(source2)[1]
+  
+  write.table (umap_3D, 
+               paste0("umap3D_coembedding", suffix, ".tsv"), 
+               quote=FALSE, sep="\t",  col.names = NA)
+
+  write.table (data.frame("cell_annotation" = c(paste0(cat1,"_", source1), 
+                                                paste0(cat2,"_", source2)), 
+                          "data_source" = c(rep(cat1_label,length(cat1)), 
+                                            rep(cat2_label,length(cat2))),
+                          row.names = rownames(umap_3D)),
+             paste0(prefix, "cell_annotation_coembedding", ".tsv"),
+             quote=FALSE, sep="\t",  col.names = NA)
+}
+```
+
+## Function - confusion matrix plots
+
+```{r}
+confusion_matrix <- function(rowMeta, colMeta, suffix) {
+  library(corrplot)
+  table_with_data<- data.frame("rowMeta" = rowMeta, "colMeta" = colMeta)
+  
+  generatePlot<- function() {
+    confus_mat <- as.matrix(table(table_with_data[,c("rowMeta","colMeta")]))
+    for(i in seq(1, nrow(confus_mat), 1)){
+      confus_mat[i,] <- confus_mat[i,]/sum(confus_mat[i,])
+    }
+    corrplot(as.matrix(confus_mat),is.corr = FALSE)
+    
+    confus_mat <- as.matrix(table(table_with_data[,c("colMeta","rowMeta")]))
+    for(i in seq(1, nrow(confus_mat), 1)){
+      confus_mat[i,] <- confus_mat[i,]/sum(confus_mat[i,])
+    }
+    corrplot(as.matrix(confus_mat),is.corr = FALSE)  
+  }
+  
+  pdf(file=paste0("confus_mat",suffix,".pdf"))
+  generatePlot()
+  dev.off()
+  
+  generatePlot()
+}
+```
+
+## Function - impuZ_2 imputation
+
+```{r}
+# dt1 bindSC co-embedding - X
+# dt2 bindSC co-embedding
+
+# imputing features (any continuous feature) in dt1/X for samples in dt2
+impuZ_2 <- function(X, dt1, dt2){
+    out <- X%*%dt1%*%t(dt2)
+    return(out)
+}
+```
+
+## Function - GeneImp2 imputation
+
+```{r}
+# dt1 bindSC co-embedding: on RNA cells 
+# dt2 bindSC co-embedding: on Merfish cells 
+# X : gene expression matrix on RNA cells, or any type of continuous data from RNA (dt1) 
+# k:  neighbor size
+
+# imputing features (any continuous feature) in dt1/X for samples in dt2
+GeneImp2 <- function(dt1 = NULL, X = NULL, dt2 = NULL, k=NULL){
+    dis<-cdist(as.matrix(dt2), as.matrix(dt1))
+    # using k-neighbour to update coembeddings 
+    v <- rep(0, nrow(dt2))
+    for(i in seq(1, nrow(dis),1)){
+          b<-sort(dis[i,])
+          v[i]= b[k]
+          d<-rep(0, length(b))
+          d[which(dis[i,]<=b[k])]<-1
+          dis[i,]<-d/k
+    }
+    U <- dis%*%t(X)
+    return(list(t(U),v))
+}
+
+```
+
+## Function - export to Xena
+
+```{r}
+toXena <- function(seuratObject, writeExp = TRUE) {
+  # metadata
+  data = seuratObject@meta.data
+  write.table(data.frame("ID"=rownames(data), data), file = "meta.tsv", sep='\t', quote=FALSE, row.names=F)
+  
+  # expression matrix
+  if (writeExp) {
+    data = seuratObject[[seuratObject@active.assay]]@data
+    write.table(data.frame("ID"=rownames(data), data), file = "expression.tsv", sep='\t', quote=FALSE, row.names=F)
+  }
+  
+  # umap reduction
+  if (exists("umap", where= seuratObject@reductions)) {
+    data = seuratObject@reductions$umap@cell.embeddings
+    write.table(data.frame("ID"=rownames(data), data), file = "umap3D.tsv", sep='\t', quote=FALSE, row.names=F)
+  }
+}
+```
+
+# Load scRNA-seq (Allen brain) and pp
+
+MT%, filtering, scTransform normalization, [PCA, neighbor, UMAP, clustering] - don't really need this since the data has class, subclass and cluster information in the metadata already One cortical scRNA-seq data composed of \~14,000 adult mouse primary visual cortex (VISp) from the Allen Institute was collected. This dataset was generated using the SMART-Seq2 protocol. The data source for download is from Seurat (<https://www.dropbox.com/s/cuowvm4vrf65pvq/allen_cortex.rds?dl=1>).
+
+```{r}
+getwd()
+SC <- readRDS(file="input_data/allen_cortex.rds")
+
+library(tidyverse)
+mouse_mito = as_tibble(read.csv("../Mouse.MitoCarta3.0.csv", header = TRUE))
+mouse_mito = mouse_mito %>% select(c(Symbol, MitoCarta2.0_Score))
+
+mito.genes = as.character(mouse_mito$Symbol)
+mito.genes = mito.genes[mito.genes %in% rownames(SC[['RNA']]@data)]
+percent.mito = Matrix::colSums(SC[['RNA']]@data[mito.genes,]) / Matrix::colSums(SC[['RNA']]@data) * 100
+SC = AddMetaData(object = SC, metadata = percent.mito, col.name = "percent.mito")
+Idents(SC) <- "SC"
+
+p1<- VlnPlot(SC, features = c("nFeature_RNA", "nCount_RNA", "percent.mito"), ncol = 3)
+ggarrange(p1)
+
+SC <- subset(SC, subset =  nFeature_RNA < 12500 & 
+               nFeature_RNA > 2500 & 
+               nCount_RNA < 3.5e+06 &
+               percent.mito < 20)
+SC$orig.ident <- SC$subclass
+
+# normalization
+if (SCT) {  
+  if (mito){
+    SC <- SCTransform(SC, vars.to.regress = "percent.mito")
+  } else {
+    SC <- SCTransform(SC)
+  }
+  DefaultAssay(SC) <- "SCT"  
+} else {
+  DefaultAssay(SC) <- "RNA"
+  SC<-NormalizeData(SC)
+  SC<-FindVariableFeatures(SC, selection.method = "vst", nfeatures = 2000)
+  if (mito){
+    SC<-ScaleData(SC, vars.to.regress = c("percent.mito")) %>% 
+      RunPCA()
+  } else {
+    SC<-ScaleData(SC) %>% 
+      RunPCA()
+  }
+}
+
+unique(SC$subclass)
+y.clst <- SC$subclass
+```
+
+# Load scRNA-seq (liver met) and pp
+
+```{r}
+datafile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/16-080L/scRNAseq/filtered_feature_bc_matrix.h5"
+clusterfile ="/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/16-080L/scRNAseq/cluster.tsv"
+```
+
+```{r}
+SC.rna <- Read10X_h5(datafile)
+cluster <- read.csv(file = clusterfile, sep = '\t', header = TRUE)
+
+SC <- CreateSeuratObject(counts = SC.rna,  meta.data = cluster)
+
+SC$orig.ident<- SC$louvain
+```
+
+```{r}
+p1<- VlnPlot(SC, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+ggarrange(p1)
+p1
+```
+
+```{r}
+SC <- subset(SC, subset =  nFeature_RNA < 6000 & 
+               nFeature_RNA > 200 & 
+               nCount_RNA < 30000 )
+```
+
+```{r}
+SC<-NormalizeData(SC, scale.factor =1e+6)
+SC<-FindVariableFeatures(SC, selection.method = "vst", nfeatures = 5000)
+SC<-ScaleData(SC)
+```
+
+```{r}
+Idents(SC) <- "scRNA-seq"
+y.clst <- SC$louvain
+```
+
+# Load scRNA-seq (melanoma) and pp
+
+data: <https://singlecell.broadinstitute.org/single_cell/study/SCP109/melanoma-immunotherapy-resistance> The datafile is in the unit of log2(1+TPM/10 ), already subset to only the non-tumor cells, and already normalized against the total value per cell, and scale to the level of 1 million 1e+6
+
+```{r}
+# non malignant cells only
+datafile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/melanoma_Regiv2018/SCP109/integrationData/tumors.nonmal_tpm.tsv"
+metafile ="/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/melanoma_Regiv2018/SCP109/integrationData/tumors.nonmal_anno.txt"
+
+# malignant and non malignant cells 
+# datafile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single\ Cell/melanoma_Regiv2018/SCP109/integrationData/tumors.all_tpm.txt"
+
+# metafile ="/Users/jzhu/Documents/JingData/WORK/Cancer/Single\ Cell/melanoma_Regiv2018/SCP109/integrationData/cell.type.all.tsv"
+
+SC.rna <- as.sparse(read.csv(file = datafile, sep = "\t", header = TRUE, row.names = 1))
+# revert back from  log2(1+TPM/10 )
+SC.rna  = (2^SC.rna-1)*10
+
+meta <- read.csv(file = metafile, sep = '\t', header = TRUE, row.names = 1)
+
+SC <- CreateSeuratObject(counts = SC.rna,  meta.data = meta)
+SC$orig.ident<- SC$cell.type
+
+# since need to integrate with t-CycIF data, which has only 43 markders. Need to get a new smaller matrix with just these 43 markders with the matching antibody name
+
+DefaultAssay(SC) <- "RNA"
+SC<-NormalizeData(SC, scale.factor =1e+6)
+SC<-FindVariableFeatures(SC, selection.method = "vst", nfeatures = 2000)
+
+SC<-ScaleData(SC) %>% 
+  RunPCA() %>%
+  FindNeighbors() %>%
+  FindClusters()    
+
+SC <- RunUMAP(SC, n.components = 3L,  dims = 1:10)
+DimPlot(SC, reduction = "umap", dims = c(1, 2))
+
+Idents(SC) <- "SC"
+#y.clst <- SC$cell.type
+y.clst <- SC$seurat_clusters
+
+```
+
+```{r}
+toXena(SC, writeExp = FALSE)
+```
+
+```{r}
+confusion_matrix(SC$orig.ident, SC$seurat_clusters, "_cluster")
+```
+
+# Load abEstimate
+
+```{r}
+# non malignant cells only
+datafile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single\ Cell/melanoma_Regiv2018/SCP109/integrationData/tumors.nonmal_AbEstimate.tsv"
+metafile ="/Users/jzhu/Documents/JingData/WORK/Cancer/Single\ Cell/melanoma_Regiv2018/SCP109/integrationData/tumors.nonmal_anno.txt"
+
+# maliganant and non malignant cells
+# datafile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single\ Cell/melanoma_Regiv2018/SCP109/integrationData/tumors.all_AbEstimate.tsv"
+# metafile ="/Users/jzhu/Documents/JingData/WORK/Cancer/Single\ Cell/melanoma_Regiv2018/SCP109/integrationData/cell.type.all.tsv"
+
+
+Z.rna <- t(as.sparse(read.csv(file = datafile, sep = "\t", header = TRUE, row.names = 1)))
+meta <- read.csv(file = metafile, sep = '\t', header = TRUE, row.names = 1)
+
+Z <- CreateSeuratObject(counts = Z.rna,  meta.data = meta)
+Idents(Z) <- "estimateAB"
+Z$orig.ident<- Z$cell.type
+
+DefaultAssay(Z) <- "RNA"
+Z[['RNA']]@data <- log1p(Z[['RNA']]@counts)
+
+Z<-FindVariableFeatures(Z, selection.method = "vst")
+
+Z<-ScaleData(Z) %>% 
+    RunPCA()
+```
+
+# Load ST (vizgen mouse coronal) and pp
+
+Vizgen MERFISH Mouse Brain Receptor Map S2R1 count data <https://info.vizgen.com/mouse-brain-map?submissionGuid=556602ae-7d8e-400d-998d-f01939580490> It takes 30min to load the tsv file, it seems much much longer than scanpy loading tsv file, maybe it will be easier to save the data as .annadata then convert it to .seurat type of data.
+
+```{r}
+# this code generate a large dgCMatrix, with is what the BiCCA needs, note that BiCCA does not need seurat object
+datafile = "input_data/datasets_mouse_brain_map_BrainReceptorShowcase_Slice2_Replicate1_cell_by_gene_S2R1.tsv"
+
+ST.rna <- as.sparse(read.csv(file = datafile, sep = "\t", header = TRUE, row.names = 1))
+colnames(ST.rna) = substring(colnames(ST.rna),2)
+
+meta <- read.csv(file = 'input_data/vizgenMeta.tsv', sep = '\t', header = TRUE, colClasses = c("X"="character"))
+row.names(meta) = meta$X
+ST <- CreateSeuratObject(counts = ST.rna,  meta.data = meta)
+Idents(ST) <- "ST"
+ST$orig.ident<- ST$louvain
+  
+# there are only two mitochondria genes. no regress out mito signature
+ST <- NormalizeData(ST)
+x.clst <- ST$louvain
+```
+
+# Load ST (xenium tsv) and pp
+
+```{r}
+datafile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/16-080L/xenium/exprMatrix.tsv"
+metafile ="/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/16-080L/xenium/cells.tsv"
+clusterfile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/16-080L/xenium/cluster.tsv"
+```
+
+```{r}
+ST.rna <- as.sparse(read.csv(file = datafile, sep = "\t", header = TRUE, row.names = 1))
+meta <- read.csv(file = metafile, sep = '\t', header = TRUE)
+cluster <- read.csv(file = clusterfile, sep = '\t', header = TRUE)
+meta<-merge(meta, cluster, by = "xenium_id", all.x = TRUE)
+
+ST <- CreateSeuratObject(counts = ST.rna,  meta.data = meta, row.names = 1)
+
+ST$orig.ident<- ST$louvain
+```
+
+```{r}
+cells_to_keep <- (!is.na(ST@meta.data$louvain)) & (ST@meta.data$nFeature_RNA >1)
+ST <- ST[, cells_to_keep]
+```
+
+```{r}
+expr_matrix <- GetAssayData(ST, slot = "data")
+gene_sd <- apply(expr_matrix, 1, sd)
+sd_threshold <- 0.15
+genes_to_keep <- names(gene_sd)[gene_sd > sd_threshold]
+ST[["RNA"]]@var.features <-genes_to_keep
+```
+
+```{r}
+ST <- NormalizeData(ST, scale.factor = 1e+6)
+ST<-ScaleData(ST)
+
+Idents(ST) <- "xenium"
+x.clst <- ST$louvain
+```
+
+# Load ST (t-CycIF melanoma) and pp
+
+data: <https://www.tissue-atlas.org/atlas-datasets/nirmal-maliga-vallius-2021>. MEL08-1-1
+
+```{r}
+datafile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/Melanoma_sorger2022/MEL08-1-1.raw.tsv"
+metafile ="/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/Melanoma_sorger2022/celltype.tsv"
+xycorfile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/Melanoma_sorger2022/MEL08-1-1.csv"
+clusterfile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/Melanoma_sorger2022/cluster.tsv"
+
+ST.rna <- t(as.sparse(read.csv(file = datafile, sep = "\t", header = TRUE, row.names = 1)))
+meta <- read.csv(file = metafile, sep = '\t', header = TRUE)
+
+ST <- CreateSeuratObject(counts = ST.rna,  meta.data = meta, row.names = 1)
+
+new = read.csv(file= xycorfile)
+ST@meta.data["Y_centroid"] = new$Y_centroid
+new = read.csv(file= clusterfile, sep='\t')
+
+ST@meta.data["leiden"] = new$leiden
+ST@meta.data["louvain"] = new$louvain
+
+ST$orig.ident<- ST$phenotype_brief
+```
+
+```{r}
+p1<- VlnPlot(ST, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+ggarrange(p1)
+
+ST <- subset(ST, subset = nCount_RNA < 1.8e+05)
+```
+
+```{r}
+# remove the bottom sample, only keep the top sample
+#ST = subset(x=ST, subset = Y_centroid < 7500)
+
+# remove Melanocytes (tumor) data and Unknown data
+Idents(ST) <- ST$phenotype_brief
+ST = subset(x = ST, idents = c("Melanocytes", "Unknown"), invert = TRUE)
+
+ST <- NormalizeData(ST, scale.factor = 1e+6)
+ST<-ScaleData(ST)
+
+Idents(ST) <- "t-CycIF"
+#x.clst <- ST$phenotype_brief
+x.clst <- ST$louvain
+```
+
+# Load ST (Visium mouse sagittal anterior1) pp
+
+direct from Seurat
+
+```{r}
+library(SeuratData)
+if (!("stxBrain.SeuratData" %in% rownames(InstalledData()))) {
+    InstallData("stxBrain")
+}
+ST <- LoadData("stxBrain", type = "anterior1")
+
+mito.genes = as.character(mouse_mito$Symbol)
+mito.genes = mito.genes[mito.genes %in% rownames(ST)]
+percent.mito = Matrix::colSums(ST[mito.genes,]) / Matrix::colSums(ST) * 100
+ST = AddMetaData(object = ST, metadata = percent.mito, col.name = "percent.mito")
+Idents(ST) <- "ST"
+
+p1 <- VlnPlot(ST, features = c("nFeature_Spatial", "nCount_Spatial", "percent.mito"), ncol = 3)
+ggarrange(p1)
+
+if (SCT)  {  
+  if (mito) {
+    ST <- SCTransform(ST, vars.to.regress = "percent.mito", assay = "Spatial") %>%
+        RunPCA() %>%
+        FindNeighbors(dims = 1:30) %>%
+        RunUMAP(dims = 1:30) %>%
+        FindClusters()
+  } else {
+    ST <- SCTransform(ST, assay = "Spatial") %>%
+        RunPCA() %>%
+        FindNeighbors(dims = 1:30) %>%
+        RunUMAP(dims = 1:30) %>%
+        FindClusters()
+  }
+  DefaultAssay(SC) <- "SCT"  
+} else {
+  DefaultAssay(ST) <- "Spatial"
+  ST<-NormalizeData(ST)
+  ST<-FindVariableFeatures(ST, selection.method = "vst", nfeatures = 2000)
+  if (mito) {
+    ST<-ScaleData(ST, vars.to.regress = c("percent.mito"))
+  } else {
+    ST<-ScaleData(ST)
+  }
+  ST <- RunPCA(ST) %>%
+        FindNeighbors(dims = 1:30) %>%
+        RunUMAP(dims = 1:30) %>%
+        FindClusters()
+}
+
+ST$orig.ident<- ST$seurat_clusters
+x.clst <- ST$seurat_clusters
+```
+
+# BiCCA method ---
+
+## Prepare for the input for bindSC alignment, since X and Z needs the same dimension, a subset of ST and SC overlapping genes
+
+X: ST\
+Z0:ST feature, SC cell\
+Y: SC
+
+### ST, SC
+
+```{r}
+if (SCT) {
+  ST_genes<-ST[["SCT"]]@var.features
+  SC_genes<-SC[["SCT"]]@var.features
+  gene.use <- intersect(ST_genes, SC_genes)
+  x <- ST[['SCT']]@scale.data[gene.use,]
+  z0 <- SC[['SCT']]@scale.data[gene.use,]
+  y<- SC[['SCT']]@scale.data
+} else {
+  ST_genes<-ST[["RNA"]]@var.features
+  SC_genes<-SC[["RNA"]]@var.features
+  gene.use <- intersect(ST_genes, SC_genes)
+  x <- ST[['RNA']]@scale.data[gene.use,]
+  z0 <- SC[['RNA']]@scale.data[gene.use,]
+  y<- SC[['RNA']]@scale.data
+  
+  #gene.use <- integration.features #Seurat integration method features
+  #x <- ST[['Spatial']]@data[gene.use,]
+  #z0 <- SC[['RNA']]@data[gene.use,]
+  #y<- SC[['RNA']]@data
+}
+
+#y.clst <- SC@meta.data$subclass
+```
+
+### t-CycIF, SC
+
+```{r}
+x <- ST[['RNA']]@scale.data
+
+z0<- Z[['RNA']]@scale.data
+
+y <- SC[['RNA']]@scale.data
+
+#y <-SC[['RNA']]@data[rownames(SC[['RNA']]@data) %in% rownames(SC[['RNA']]@scale.data), ]  
+
+```
+
+## run BiCCA without dimensionality reduction
+
+```{r}
+res <- BiCCA( X = x ,
+             Y = y, 
+             Z0 = z0, 
+             X.clst = x.clst,
+             Y.clst = y.clst,
+             alpha = 0.5, 
+             lambda = 0.5,
+             K = 15,
+             temp.path  = "out",
+             num.iteration = 50,
+             tolerance = 0.01,
+             save = TRUE,
+             parameter.optimize = FALSE,
+             block.size = 0)
+```
+
+## CO-embedding double plot
+
+use python method - fast
+
+```{r}
+library(reticulate)
+umap_import <- import(module = "umap", delay_load = TRUE)
+umap_import$pkg_resources$get_distribution("umap-learn")
+# example https://github.com/satijalab/seurat/blob/master/R/dimensional_reduction.R#L1305
+
+umap.args = list(densmap = FALSE, n_components = n_components) 
+umap <- do.call(what = umap_import$UMAP, args = umap.args)
+umap_3D <- umap$fit_transform(rbind(res$u, res$r))
+
+if (n_components == 3){
+  colnames(umap_3D) =c("UMAP1","UMAP2","UMAP3")  
+}
+if (n_components == 2){
+  colnames(umap_3D) =c("UMAP1","UMAP2")  
+}
+
+double_plot(umap_3D, x.clst, y.clst, Idents(ST), Idents(SC))
+
+rownames(umap_3D) =c(dimnames(res$u)[[1]],dimnames(res$r)[[1]])
+```
+
+## Save the joint embedding, data sources, orig cell annotation
+
+```{r}
+prefix = "bindSC_"
+save_coembedding(umap_3D, ST$orig.ident, SC$orig.ident, Idents(ST), Idents(SC), prefix)
+
+```
+
+#################################################################################################### 
+
+## function - label transfer function using SVM
+
+```{r}
+# Input:
+#   dt1 FROM latent representation 
+#   dt2 TO latent representation in the same space
+#   X.clst FROM label
+# Return:
+#   $prob_max TO probability for the most likely label
+#   $prob_full TO full probability matrix 
+
+label_transfer_full_prob_SVM <- function(dt1 = NULL, X.clst = NULL, dt2 = NULL, k=3) {
+    library(bindSC)
+    dis<-cdist(as.matrix(dt2), as.matrix(dt1))
+    # using k-neighbour to update coembeddings 
+    #k <- 3
+    for(i in seq(1, nrow(dis),1)){
+          b<-sort(dis[i,])
+          d<-rep(0, length(b))
+          d[which(dis[i,]<=b[k])]<-1
+          dis[i,]<-d/k
+    }
+    U <- dis%*%dt1
+        
+
+    model <- svm(dt1, as.factor(X.clst), probability=TRUE)
+    pred <- predict(model, U, probability=TRUE)
+    out <- attr(pred, "probabilities")
+   
+    celltype <- rep("unknown", nrow(out))
+    prob_max <- rep(0, nrow(out))
+    data_point <- rep(k, nrow(out))
+    names <- colnames(out)
+    for(i in seq(1,nrow(out),1)){
+          tp <- out[i,]
+          pos <- which(tp==max(tp),arr.ind = TRUE)
+          celltype[i] <- names[pos]
+          prob_max[i] <- tp[pos]
+    }
+    prob <- data.frame("predict_celltype"=celltype, "Prob_max"=prob_max, "data_point"=data_point)
+    rownames(prob) <- rownames(dt2)
+    rownames(out) <- rownames(dt2)
+    #colnames(out) <- paste0(colnames(out),suffix)
+    ret <- list()
+    ret$prob_max = prob
+    ret$prob_full = out
+    return(ret)
+}
+```
+
+## categorical data label transfer from ST to SC
+
+```{r}
+library(e1071)
+k=3
+suffix="_bindSC"
+ret <- label_transfer_full_prob_SVM (dt1=res$u, X.clst=x.clst, dt2=res$r, k=k)
+cell_type_predict_SC <- ret$prob_max
+cell_type_prob_full_SC <- ret$prob_full
+head(cell_type_predict_SC)
+```
+
+## Save the predicted cell type for SC data
+
+```{r}
+dataTable = data.frame (
+  "cell_type_predict"=paste0(cell_type_predict_SC$predict_celltype, "_predict"), 
+  "Prob_max"= cell_type_predict_SC$Prob_max)
+colnames(dataTable) = c(paste0("cell_type_pred", suffix), paste0("Prob_max", suffix))
+
+write.table(cbind("ID"=rownames(cell_type_predict_SC), dataTable, cell_type_prob_full_SC),
+            paste0("cell_type_predict", suffix, ".tsv"),
+            quote=FALSE, sep="\t", row.names = F)
+```
+
+## categorical data label transfer from SC to ST using SVM
+
+```{r}
+library(e1071)
+k= 3
+prefix= "bindSC_"
+ret <- label_transfer_full_prob_SVM (dt1=res$r, X.clst=y.clst, dt2=res$u, k=k)
+cell_type_predict_ST <- ret$prob_max
+cell_type_prob_full_ST <- ret$prob_full
+head(cell_type_predict_ST)
+head(cell_type_prob_full_ST)
+```
+
+## Save the predicted cell type for ST data
+
+```{r}
+dataTable = data.frame (
+  "cell_type_predict"= cell_type_predict_ST$predict_celltype, 
+  "Prob_max"= cell_type_predict_ST$Prob_max)
+colnames(dataTable) = c(paste0(prefix, "cell_type_pred"), paste0(prefix, "Prob_max"))
+
+write.table(cbind("ID"=rownames(cell_type_predict_ST), dataTable, cell_type_prob_full_ST),
+            paste0(prefix, "labelTransfer", ".tsv"),
+            quote=FALSE, sep="\t", row.names = F)
+
+# dataTable = data.frame (
+#   "celltype_predict_annotate"=c(paste0(cell_type_predict_ST$predict_celltype,"_predict"), paste0(y.clst, "_annotated")),
+#   "Prob_max"= c(cell_type_predict_ST$Prob_max, rep("",ncol(SC))),
+#   "data_point"= c(cell_type_predict_ST$data_point, rep("",ncol(SC))))
+# colnames(dataTable) = c(paste0("celltype_predict_annotate",suffix),
+#                         "Prob_max","data_point")
+# write.table (dataTable,
+#              paste0("cell_type_predict_coembedding", suffix,".tsv"),
+#              quote=FALSE, sep="\t", col.names = NA,
+#              row.names = c(row.names(cell_type_predict_ST),
+#                            dimnames(res$r)[[1]]))
+
+```
+
+## Confusion matrix
+
+```{r}
+confusion_matrix(x.clst, cell_type_predict_ST$predict_celltype, suffix)
+```
+
+# Seurat Integration method ---
+
+## Integration by CCA
+
+<https://satijalab.org/seurat/archive/v3.0/integration.html>
+
+```{r}
+if (exists("Z")){
+  datasetList = c(Z,ST)
+} else {
+  datasetList = c(SC,ST)
+}
+integration.features= SelectIntegrationFeatures(object.list = datasetList)
+
+if (SCT) {
+  integration.list = PrepSCTIntegration(object.list = datasetList, anchor.features = integration.features)
+  
+  integration.anchors <- FindIntegrationAnchors(object.list = integration.list, 
+                                                anchor.features = integration.features, 
+                                                normalization.method = "SCT")
+  seurat_integrated <- IntegrateData(anchorset = integration.anchors, normalization.method = "SCT")
+} else {
+  integration.anchors <- FindIntegrationAnchors(object.list = datasetList, 
+                                                anchor.features = integration.features)
+  seurat_integrated <- IntegrateData(anchorset = integration.anchors)
+  seurat_integrated <- ScaleData(seurat_integrated)
+}
+
+seurat_integrated <- RunPCA(seurat_integrated)
+seurat_integrated <- RunUMAP(seurat_integrated, dims = 1:20, umap.method = "umap-learn", n.components = n_components)
+```
+
+## Co-embedding double plot CCA
+
+```{r}
+umap_3D = as.matrix(seurat_integrated$umap@cell.embeddings)
+double_plot(umap_3D, SC$orig.ident, ST$orig.ident, Idents(SC), Idents(ST))
+```
+
+## Integration by reciprocal PCA (RPCA)
+
+<https://satijalab.org/seurat/articles/integration_rpca.html>
+
+```{r}
+datasetList = c(SC,ST)
+integration.features= SelectIntegrationFeatures(object.list = datasetList)
+integration.list = PrepSCTIntegration(object.list = datasetList, anchor.features = integration.features)
+integration.list <- lapply(X = integration.list, FUN = RunPCA, features = integration.features)
+
+integration_rpca.anchors <- FindIntegrationAnchors(object.list = integration.list, 
+                                         normalization.method = "SCT",
+                                         anchor.features = integration.features, 
+                                         dims = 1:30, reduction = "rpca", k.anchor = 20)
+seurat_integrated_rpca <- IntegrateData(anchorset = integration_rpca.anchors, 
+                                     normalization.method = "SCT", dims = 1:30)
+
+seurat_integrated_rpca <- RunPCA(seurat_integrated_rpca)
+seurat_integrated_rpca <- RunUMAP(seurat_integrated_rpca, 
+                                  reduction = "pca", dims = 1:30, 
+                                  umap.method = "umap-learn",
+                                  n.components = n_components)
+```
+
+## Co-embedding double plot RPCA
+
+```{r}
+umap_3D = as.matrix(seurat_integrated_rpca$umap@cell.embeddings)
+double_plot(umap_3D, SC$orig.ident, ST$orig.ident, Idents(SC), Idents(ST))
+```
+
+## save joint embedding, data source, and original annotation
+
+```{r}
+suffix = "_Seurat_Integration"
+save_coembedding(umap_3D, SC$orig.ident, ST$orig.ident, Idents(SC), Idents(ST), suffix)
+```
+
+write.table(umap_plt_object)
+
+## Categorical Data Transfer
+
+<https://satijalab.org/seurat/archive/v3.2/spatial_vignette.html>
+
+```{r}
+suffix = "_Seurat_Integration"
+
+if (exists("Z")){
+  query = Z
+} else {
+  query = ST
+}
+
+if (SCT) {
+  anchors <- FindTransferAnchors(reference = SC, query = query, normalization.method = "SCT", features= integration.features)
+} else {
+  anchors <- FindTransferAnchors(reference = SC, query = query, normalization.method = "LogNormalize", features= integration.features)
+}
+predictions <- TransferData(anchorset = anchors, refdata = SC$orig.ident, k.weight=7)
+```
+
+## save predictions
+
+```{r}
+write.table(predictions, paste0("cell_type_predict", suffix, ".tsv"), quote = FALSE, sep = '\t', col.names = NA)
+```
+
+## confusion matrix
+
+```{r}
+confusion_matrix(ST$orig.ident, predictions$predicted.id, suffix)
+```
+
+# BiCCA imputation
+
+## Impute x (ST) feature for y (SC) samples
+
+```{r}
+#imputation of featurs in the entire x (ST) matrix for y (SC) samples, can be used to any x feature
+input_x = x
+Z_est <- res$Z_est
+Z_impu <- impuZ_2(X=input_x, dt1 = res$u, dt2=res$r)
+Z_impu2 <- GeneImp2(res$u, x, res$r, 3)
+colnames(Z_impu) <- colnames(z0)
+colnames(Z_impu2) <- colnames(z0)
+```
+
+```{r}
+# gene in bicca
+gene_ST = 'pERK'
+gene_SC= 'MAPK3'
+
+orig_y = SC[[SC@active.assay]]@data[gene_SC,] 
+orig_x= ST[[ST@active.assay]]@data[gene_ST,]
+
+table = data.frame("Z_impu"=Z_impu[gene_ST,], 
+                   "Z_impu2" = Z_impu2[gene_ST,],
+                   "y"=orig_y, 
+                   "Z_est" = Z_est[gene_ST,])
+
+s1 <-cor.test(table$Z_impu2, table$y)
+s2 <-cor.test(table$Z_impu, table$y)
+s3 <-cor.test(table$Z_est, table$y)
+s4 <-cor.test(table$Z_impu, table$Z_impu2)
+
+p1= ggplot(data=table, aes(x = Z_impu2, y = y)) + geom_point(alpha = 0.1) + 
+  annotation_custom (grobTree(textGrob(paste0(gene_ST,"\n",
+                                              "r:", signif(s1$estimate), "\n",
+                                              "p:", signif(s1$p.value,3)))))
+
+p2= ggplot(data=table, aes(x = Z_impu, y = y)) + geom_bin2d() + theme_classic() +
+  scale_fill_gradient(low="lightblue1",high="darkblue",trans="log10") + 
+  annotation_custom (grobTree(textGrob(paste0(gene_ST,"\n",
+                                              "r:", signif(s2$estimate), "\n",
+                                              "p:", signif(s2$p.value,3)))))
+
+p3= ggplot(data=table, aes(x = Z_est, y = y)) + geom_bin2d() + theme_classic() +
+  scale_fill_gradient(low="lightblue1",high="darkblue",trans="log10") + 
+  annotation_custom (grobTree(textGrob(paste0(gene_ST,"\n",
+                                              "r:", signif(s3$estimate), "\n",
+                                              "p:", signif(s3$p.value,3)))))
+
+p4= ggplot(data=table, aes(x = Z_impu2, y = Z_impu)) + geom_bin2d() + theme_classic() +
+  scale_fill_gradient(low="lightblue1",high="darkblue",trans="log10") + 
+  annotation_custom (grobTree(textGrob(paste0(gene_ST,"\n",
+                                              "r:", signif(s4$estimate), "\n",
+                                              "p:", signif(s4$p.value,3)))))
+
+ggarrange(p1, p2, p3, p4)
+```
+
+## Impute y (SC) feature for x (ST) samples
+
+```{r}
+#imputation of featurs in the y (SC) matrix for x (ST) samples, can be used to any y feature
+input_y = t(data.matrix(SC@meta.data %>% select(starts_with("OE."))))
+Z_impu <- impuZ_2(X=input_y, dt1 = res$r, dt2=res$u)
+r <- GeneImp2(res$r, input_y, res$u, 3)
+Z_impu2 <-r[[1]]
+Z_impu2_threshold <- data.frame(r[[2]])
+
+colnames(Z_impu) <- colnames(x)
+colnames(Z_impu2) <- colnames(x)
+colnames(Z_impu2_threshold) <- "impu_threshold"
+```
+
+```{r}
+# save imputed y feature for x samples
+dataTable = t(Z_impu)
+write.table(cbind("ID"=rownames(dataTable), dataTable),
+            "imputed.tsv",
+            quote=FALSE, sep="\t", row.names = F)
+
+dataTable = cbind(t(Z_impu2), 
+write.table(cbind("ID"=rownames(dataTable), dataTable),
+            "imputed2.tsv",
+            quote=FALSE, sep="\t", row.names = F)
+```
+
+# Seurat integration of gene expression
+
+```{r}
+sub_SC = subset(seurat_integrated, idents="SC")
+sub_ST = subset(seurat_integrated, idents="ST")
+
+# gene in integration feature # integration.features
+gene = 'Ttr'
+table = data.frame("integrated"= sub_ST[['integrated']]@scale.data[gene,], 
+                   "origin"=ST[['SCT']]@data[gene,])
+
+s <-cor.test(table$integrated, table$origin)
+p1= ggplot(data=table, aes(x = origin, y = integrated)) + geom_point(alpha = 0.1)
+p2= ggplot(data=table, aes(x = origin, y = integrated)) + geom_bin2d() + theme_classic() +
+  scale_fill_gradient(low="lightblue1",high="darkblue",trans="log10") + 
+  annotation_custom (grobTree(textGrob(paste0(gene,"\n",
+                                              "r:", signif(s$estimate), "\n",
+                                              "p:", signif(s$p.value,3)))))
+ggarrange(p1, p2)
+```

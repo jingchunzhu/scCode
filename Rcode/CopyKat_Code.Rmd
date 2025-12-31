@@ -1,0 +1,157 @@
+---
+title: "CopyKat_code"
+output: html_document
+date: "2024-08-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Intro
+
+<https://github.com/navinlabcode/copykat>
+
+<https://www.nature.com/articles/s41587-020-00795-2>
+
+## Installation
+
+```{r installation}
+Sys.unsetenv("GITHUB_PAT")
+library(devtools)
+install_github("navinlabcode/copykat")
+```
+
+## Demo Test
+
+```{r test}
+library(copykat)
+copykat.test <- copykat(rawmat=exp.rawdata, sam.name="test")
+```
+
+## Library
+
+```{r}
+library(copykat)
+library(Seurat)
+```
+
+## Load scRNA-seq (liver met) and pp
+
+```{r}
+datafile = "/Users/jzhu/Documents/JingData/WORK/Cancer/Single_Cell/16-080L/scRNAseq/filtered_feature_bc_matrix.h5"
+exp.rawcount <- Read10X_h5(datafile)
+```
+
+## Run CopyKat
+
+```{r}
+sam.name="16-080L"
+copykat.test <- copykat(rawmat=exp.rawcount, id.type="S", ngene.chr=5, win.size=25, KS.cut=0.1, sam.name=sam.name, distance="euclidean", n.cores=4)
+```
+
+## Reload Existing Results
+
+```{r}
+sam.name = "16-080L"
+copykat.test <- list()
+rdsfile = paste0( sam.name, "_copykat_clustering_results.rds")
+copykat.test$hclustering <- readRDS(rdsfile)
+
+predfile = paste0( sam.name, "_copykat_prediction.txt")
+copykat.test$prediction <- read.table(predfile, sep = "\t", header = TRUE)
+```
+
+```{r}
+cnvfile = paste0( sam.name, "_copykat_CNA_results.txt")
+copykat.test$CNAmat <- read.table(cnvfile, sep = "\t", header = TRUE)
+```
+
+## Plotting and Clusters
+
+```{r}
+plot(copykat.test$hclustering, labels = FALSE)
+rect.hclust(copykat.test$hclustering, k = 4, border = 2:5)
+clusters <- cutree(copykat.test$hclustering, k = 4)
+cluster_midpoints <- tapply(1:length(copykat.test$hclustering$order), clusters[copykat.test$hclustering$order], mean)
+
+text(x = cluster_midpoints, y = par("usr")[3]+200, labels = unique(clusters), col = "red", cex = 1)
+
+cluster_sizes <- table(clusters)
+cluster_sizes
+```
+
+### export clusters
+
+```{r}
+clusterfile = paste0(sam.name, "_copykat_clusters.tsv")
+newnames  = gsub("\\.", "-",  names(clusters)) 
+temp_data <- data.frame(cell = newnames, clusters, check.names = FALSE)
+write.table(temp_data, clusterfile , sep ="\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+```
+
+### plot cluster tumor vs normal by CopyKat
+
+```{r}
+plot(copykat.test$hclustering, labels = FALSE)
+rect.hclust(copykat.test$hclustering, k = 4, border = 2:5)
+
+pred <- copykat.test$prediction$copykat.pred
+
+midpoints <- tapply(1:length(copykat.test$hclustering$order), pred[copykat.test$hclustering$order], mean)
+y=c(-400, -200,0)
+text(x = midpoints, y = y, labels = unique(pred), col = "red", cex = 1)
+table(pred)
+```
+
+## CNV Scores
+
+```{r}
+CNAmat<-copykat.test$CNAmat[, -(1:3)]
+sum_abs_all <- sapply(CNAmat, function(x) sum(abs(x)))
+
+cnvscorefile = paste0(sam.name, "_copykat_cnvscores.tsv")
+newnames  = gsub("\\.", "-",  names(sum_abs_all)) 
+temp_data <- data.frame(cell = newnames, cnvscore = sum_abs_all, check.names = FALSE)
+write.table(temp_data, cnvscorefile , sep ="\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+```
+
+```{r}
+df<- data.frame(cluster = clusters, cnvscore = sum_abs_all)
+mean_cnvscore <- aggregate(cnvscore ~ cluster, data = df, mean)
+mean_cnvscore
+sd_cnvscore <- aggregate(cnvscore ~ cluster, data = df, sd)
+sd_cnvscore
+```
+
+```{r}
+# Load the ggplot2 package
+library(ggplot2)
+
+p <- ggplot(df, aes(x = cnvscore)) +
+  geom_histogram(binwidth = 0.5, fill = "skyblue", color = "black") +
+  facet_wrap(~ cluster) +
+  labs(title = "Histogram of cnvscore by cluster",
+       x = "cnvscore",
+       y = "Count") 
+p
+
+histfile = paste0(sam.name, "_copykat_cnvscores_histogram.png")
+ggsave(histfile, plot = p, width = 8, height = 6, dpi = 300)
+```
+
+## Others - not used
+
+```{r}
+pred.test <- data.frame(copykat.test$prediction)
+pred.test <- pred.test[which(pred.test$copykat.pred %in% c("aneuploid","diploid")),]  ##keep defined cells
+CNA.test <- data.frame(copykat.test$CNAmat)
+```
+
+```{r}
+tumor.cells <- pred.test$cell.names[which(pred.test$copykat.pred=="aneuploid")]
+tumor.cells <- gsub("-", "\\.",  tumor.cells)
+tumor.mat <- CNA.test[, which(colnames(CNA.test) %in% tumor.cells)]
+hcc <- hclust(parallelDist::parDist(t(tumor.mat),threads =4, method = "euclidean"), method = "ward.D2")
+hc.umap <- cutree(hcc,2)
+```

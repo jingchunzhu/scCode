@@ -1,0 +1,36 @@
+cellpos-sam
+for H&E:  cellpose_HE.py
+
+
+
+
+
+######################################################################
+Run cell pose
+#CK DAPI(chan2)
+python -m cellpose --image_path mMAC_DAPI_CK_F480.tif --pretrained_model cyto3 --chan 2 --chan2 1  --save_tif  --savedir seg --no_npy  --verbose
+
+#F480 DAPI(chan2)
+python -m cellpose --image_path mMAC_DAPI_CK_F480.tif --pretrained_model cyto3 --chan 3 --chan2 1  --save_tif  --savedir seg --no_npy  --verbose
+
+#CD163 DAPI(chan2)
+python -m cellpose --image_path mMAC_DAPI_CD163_CD11c.tif --pretrained_model cyto3 --chan 2 --chan2 1 --save_tif  --savedir seg --no_npy  --verbose
+
+#DAPI only no chan2
+python -m cellpose --image_path mMAC_DAPI_CK_F480.tif --pretrained_model cyto3 --chan 1 --chan2 0  --save_tif  --savedir seg --no_npy  --verbose
+or
+python -m cellpose --image_path 2296_DAPI_CD163.tif --pretrained_model cyto3 --chan 1 --chan2 0  --save_tif  --savedir 2296seg --no_npy  --verbose
+
+if you know the cell diameter use --diameter option.
+
+
+
+buildChannelForCellPose
+run cellPose (section above)
+
+CombineCellPoseMask to generate final cell mask
+convert mask to edge
+check:
+	cell number by masks
+	viz cell segmentation
+ProteinByCell_CentroidByCell to generate data matrix
