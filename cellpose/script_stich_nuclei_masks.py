@@ -1,10 +1,10 @@
-import os
+import os,sys
 import numpy as np
 from skimage.io import imread, imsave
 
 grid = 2
-dir = "PR8_TUMOR_EARLY_mask"
-output_mask_file = "PR8_TUMOR_EARLY_cp_masks.tif"
+dir = "PR8_TUMOR_LATE_mask"
+output_mask_file = "PR8_TUMOR_LATE_cp_masks.tif"
 
 def matfileName(gridR, gridC):
     return os.path.join(dir, str(gridR) + "_" + str(gridC) +"_cp_masks.tif")
@@ -39,8 +39,8 @@ def fix_bet_Row_mask(mask_top, mask_bottom):
 # ### get cell number and mask offsets per title_grid position
 
 # Use a larger dtype to avoid overflow
-cellNumGrid = np.zeros((grid, grid), dtype=np.int32)
-cellNumOffset = np.zeros((grid, grid), dtype=np.int32)
+cellNumGrid = np.zeros((grid, grid), dtype=np.uint32)
+cellNumOffset = np.zeros((grid, grid), dtype=np.uint32)
 totalCell = 0
 
 for gridR in range(grid):
@@ -48,26 +48,39 @@ for gridR in range(grid):
         cellNumOffset[gridR, gridC] = totalCell
         matFile = matfileName(gridR, gridC)
         mask = imread(matFile)
-        cellN = np.max(mask)
+        cellN = np.uint32(np.max(mask))
         cellNumGrid[gridR, gridC] = cellN
         totalCell += cellN
-        
+
+print("cell number")
+print(cellNumGrid)
+print("cell mask offset")
+print(cellNumOffset)
+
 # ### generate grid mask with offset
 
 masks = [None] * grid * grid
 # Second pass: apply offsets
 for gridR in range(grid):
     for gridC in range(grid):
-        offset = cellNumOffset[gridR, gridC]
+        offset = int(cellNumOffset[gridR, gridC])
         matFile = matfileName(gridR, gridC)
-        mask = imread(matFile).astype(np.int32)  # ensure safe type
-        mask[mask != 0] += offset
+        mask = imread(matFile).astype(np.uint32)  # ensure safe type
+
+        # Replace your current loop logic with this:
+        mask = np.where(mask >0, mask + offset, mask)
         index = mask_index(gridR, gridC, grid)
         masks[index] = mask
+
+        non_zero_vals =  masks[index][ masks[index] > 0]
+        first_val = non_zero_vals[0]
+        last_val = non_zero_vals[-1]
+
+        print(gridR, gridC)
+        print(offset)
         print(np.max(mask))
 
 # ### fix the border between grids, for each row, between columns
-
 for gridR in range (0, grid):
     for gridC in range (0, grid-1):
         index_1 = mask_index(gridR, gridC, grid)
@@ -91,7 +104,6 @@ for gridC in range (0, grid):
         fixed_mask_bottom = fix_bet_Row_mask(mask_top, mask_bottom)
         masks[index_2] = fixed_mask_bottom
 
-
 # ### merge masks
 
 gridC = 0
@@ -112,7 +124,7 @@ for gridC in range (0, grid):
     
 total_h, total_w
 
-merged_mask = np.zeros((total_h, total_w), dtype = np.uint16)
+merged_mask = np.zeros((total_h, total_w), dtype = np.uint32)
 
 start_h =0 
 for gridR in range (0, grid):
@@ -127,8 +139,8 @@ for gridR in range (0, grid):
     start_h = start_h + h
 
 merged_mask
-
+print("max cell number", np.max(merged_mask))
 # ### export merged_mask
 
-imsave(output_mask_file, merged_mask )
+imsave(output_mask_file, merged_mask.astype(np.uint32))
 
