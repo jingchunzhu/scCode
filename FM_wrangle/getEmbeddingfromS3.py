@@ -27,19 +27,19 @@ embedding = args.embedding
 
 #S3 bucket
 bucket = "latentbrain"
-
 profile = "default"
 
 if embedding =="uce":
     results_dir = "UCE_npy_obs"
+    duplicate_dir = "duplicate_UCE"
     bucket_prefix = "UCE/"
 elif embedding == "scimilarity":
     results_dir = "SCimilarity_npy_obs"
+    duplicate_dir = "duplicate_SCimilarity"
     bucket_prefix = "scimilarity/" 
 else:
     sys.exit(1)
     
-
 def saveUCE (adata, prefix_id, results_dir):
     uce_df = pd.DataFrame(adata.obsm['X_uce'])
     np.save(os.path.join(results_dir, f'{prefix_id}_uce.npy'), uce_df)
@@ -55,7 +55,7 @@ def result_exists(prefix_id, results_dir, embedding):
         return True
     else:
         return False
-    
+
 def get_NRP_h5ad_filenames():
     result=[]
     session = boto3.Session(profile_name=profile)
@@ -240,20 +240,24 @@ def process_files_via_h5 (
     return embedding_path_npy, obs_path
 
 
-NRP_embedding_files = get_NRP_h5ad_filenames()
-grouped, others = group_files_by_prefix(NRP_embedding_files)
+embedding_files = get_NRP_h5ad_filenames()
+grouped, others = group_files_by_prefix(embedding_files)
 
 # for just one file per dataset
 for file in others:
-    print (file)
     match = re.match(r'^(?:ucsc-)?([a-fA-F0-9\-]+)_', file)
     dataset_id = match.group(1) # susch as f0f0d7c4-3bec-428e-9539-c99d36548d96
+    print (dataset_id)
+    
     if embedding == "uce":
-        file_id = file.replace("_uce_adata.h5ad", "")  # such as f0f0d7c4-3bec-428e-9539-c99d36548d96_cell_0_1000
+        file_id = file.replace("_uce_adata.h5ad", "")  # such as f0f0d7c4-3bec-428e-9539-c99d36548d96_(cell_0_1000)
     elif embedding == "scimilarity":
-        file_id = file.replace("_scimilarity_adata.h5ad", "")  # such as f0f0d7c4-3bec-428e-9539-c99d36548d96_cell_0_1000
+        file_id = file.replace("_scimilarity_adata.h5ad", "")  # such as f0f0d7c4-3bec-428e-9539-c99d36548d96_(cell_0_1000)
     if result_exists(file_id, results_dir, embedding):
-        print (f"{file_id} {embedding} results already available in NRP dir")
+        print (f"{file_id} {embedding} results already available in results dir")
+        continue
+    if result_exists(file_id, duplicate_dir, embedding):
+        print (f"{file_id} {embedding} results already available in duplicate dir")
         continue
         
     print (f"{file_id} processing ...")
@@ -278,8 +282,13 @@ for dataset_id, data in grouped.items():
     files = data["files"]
     cell_count = data["count"]
 
+    print(dataset_id)
+
     if result_exists(dataset_id, results_dir, embedding):
-        print (f"{dataset_id} {embedding} results already available in NRP dir")
+        print (f"{dataset_id} {embedding} results already available in results dir")
+        continue
+    if result_exists(dataset_id, duplicate_dir, embedding):
+        print (f"{file_id} {embedding} results already available in duplicate dir")
         continue
 
     embedding_path_npy, obs_path = process_files_via_h5( 
