@@ -5,9 +5,20 @@ import os, re, sys
 import boto3
 from collections import defaultdict
 import h5py
+import warnings
+import argparse
 
-embedding = "scimilarity" 
-#embedding = "uce"
+parser = argparse.ArgumentParser()
+
+parser.add_argument(
+    "--embedding",
+    required=True,
+    choices=["uce", "scimilarity"],
+    help="Embedding type to use (uce or scimilarity)"
+)
+
+args = parser.parse_args()
+embedding = args.embedding
 
 #NRP bucket
 #bucket = "braingeneersdev"
@@ -22,16 +33,12 @@ profile = "default"
 if embedding =="uce":
     results_dir = "UCE_npy_obs"
     bucket_prefix = "UCE/"
-    #bucket_prefix = "combined_UCE/"
 elif embedding == "scimilarity":
     results_dir = "SCimilarity_npy_obs"
     bucket_prefix = "scimilarity/" 
-    #bucket_prefix = "combined_scimilarity/"
 else:
     sys.exit(1)
     
-cgCensus_non_primary_file ="cgCensus_non_primary_datasets.txt"
-ucsc_file="ucsc_datasets.txt"
 
 def saveUCE (adata, prefix_id, results_dir):
     uce_df = pd.DataFrame(adata.obsm['X_uce'])
@@ -59,7 +66,6 @@ def get_NRP_h5ad_filenames():
             filename = obj["Key"].removeprefix(bucket_prefix)
             result.append(filename)
     return result
-
 
 def group_files_by_prefix(filenames):
     """
@@ -97,6 +103,7 @@ def group_files_by_prefix(filenames):
             non_matching.append(f)
 
     # --- Check for continuous ranges ---
+    bad_prefixes = []
     for prefix, data in grouped.items():
         files = data["files"]
         ranges = []
@@ -126,39 +133,20 @@ def group_files_by_prefix(filenames):
         # Check continuity
         for i in range(1, len(ranges)):
             if ranges[i][0] != ranges[i-1][1]+1:
-                raise ValueError(
+                warnings.warn(
                     f"Discontinuous cell range in prefix '{prefix}': "
                     f"{ranges[i-1]} followed by {ranges[i]}"
                 )
-            
+                if prefix not in bad_prefixes:
+                    bad_prefixes.append(prefix)
+                
+    # --- Remove the problematic entries ---
+    for prefix in bad_prefixes:
+        del grouped[prefix]
+        
     return grouped, non_matching
 
-def get_ucsc_dataset_ids():
-    datasets =[]
-    # Read dataset IDs from the text file (one per line)
-    with open(ucsc_file, "r") as f:
-        dataset_info = [line.strip().split("\t") for line in f if (line.strip() and line[0] != "#")]
-    for item in dataset_info:
-        datasets.append(item[0])
-    return datasets
-
-def get_cgCensus_non_primary_dataset_ids():
-    datasets =[]
-    # Read dataset IDs from the text file (one per line)
-    with open(cgCensus_non_primary_file, "r") as f:
-        dataset_info = [line.strip().split("\t") for line in f if (line.strip() and line[0] != "#")]
-    for item in dataset_info:
-        datasets.append(item[0])
-    return datasets
-
-import os
-import numpy as np
-import h5py
-import boto3
-import scanpy as sc
-import pandas as pd
-
-def process_files_via_h5(
+def process_files_via_h5 (
     files,
     profile,
     bucket,
@@ -167,7 +155,7 @@ def process_files_via_h5(
     dataset_id,
 ):
     # --- Setup paths ---
-    embedding_path_h5 = "download.h5"
+    embedding_path_h5 = f"download_{embedding}.h5"
     if embedding == "uce":
         embedding_path_npy = os.path.join(results_dir, f"{dataset_id}_uce.npy")
     elif embedding == "scimilarity":
@@ -187,7 +175,7 @@ def process_files_via_h5(
         print("Processing", start, file)
 
         # --- Download file from S3 ---
-        local_path = "download.h5ad"
+        local_path = f"download_{embedding}.h5ad"
         session = boto3.Session(profile_name=profile)
         s3 = session.client("s3")
         s3.download_file(Bucket=bucket, Key=f"{bucket_prefix}{file}", Filename=local_path)
@@ -252,8 +240,6 @@ def process_files_via_h5(
     return embedding_path_npy, obs_path
 
 
-ucsc_datasets = get_ucsc_dataset_ids()
-cgCensus_non_primary_datasets = get_cgCensus_non_primary_dataset_ids()
 NRP_embedding_files = get_NRP_h5ad_filenames()
 grouped, others = group_files_by_prefix(NRP_embedding_files)
 
@@ -272,11 +258,11 @@ for file in others:
         
     print (f"{file_id} processing ...")
     #download the file from s3 bucket
-    local_path = "download.h5ad"   # where to save locally
+    local_path = f"download_{embedding}.h5ad"   # where to save locally
     session = boto3.Session(profile_name=profile)
     s3 = session.client("s3")
     s3.download_file(Bucket=bucket, Key=f'{bucket_prefix}{file}', Filename=local_path)
-    print(f"Downloaded {bucket_prefix}/{file}→ {local_path}")
+    print(f"Downloaded {bucket_prefix}/{file} → {local_path}")
 
     adata = sc.read_h5ad(local_path, backed="r")
     # change adata.obs unique_dataset_id to dataset_id
