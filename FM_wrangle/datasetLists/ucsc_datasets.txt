@@ -1,0 +1,5 @@
+# ucsc: non cellxgene dataset
+dataset_id	cell_count	collection_doi	collection_doi_label	dataset_title
+ucsc-2e934674-0669-4d8a-9faa-9d37078f8bb6	1034819		BICAN Basal Ganglia	Human_HMBA_basalganglia_AIT_pre-print
+ucsc-4291fc35-aa8f-43fb-b7f8-987770cebdc7	548281		BICAN Basal Ganglia	Macaque_HMBA_basalganglia_AIT_pre-print
+ucsc-92b37feb-aa2c-40d7-bd90-0a9b5ddb3b27	1378211	10.1038/s41593-024-01774-5	Gabitto et al. (2024) Nat Neurosci	Whole Taxonomy - MTG: Seattle Alzheimer's Disease Atlas (SEA-AD)

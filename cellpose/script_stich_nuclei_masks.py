@@ -1,13 +1,39 @@
 import os,sys
 import numpy as np
 from skimage.io import imread, imsave
+import argparse
 
-grid = 2
-dir = "PR8_TUMOR_LATE_mask"
-output_mask_file = "PR8_TUMOR_LATE_cp_masks.tif"
+parser = argparse.ArgumentParser(
+    description ="Run after cell_pose, stich masks together into a single mask file\n"
+)
+
+parser.add_argument(
+    "--input_dir",
+    type=str,
+    required=True,
+    help="Directory of save masks (tif)"
+)
+parser.add_argument(
+    "--output_file",
+    type=str,
+    required=True,
+    help="Path to file of stiched mask (tif)"
+)
+parser.add_argument(
+    "--grid",
+    type=int,
+    required=True,
+    help="grid size (e.g. 2 means a grid of 2x2)"
+)
+
+args = parser.parse_args()
+grid = args.grid
+input_dir = args.input_dir
+output_mask_file = args.output_file
+
 
 def matfileName(gridR, gridC):
-    return os.path.join(dir, str(gridR) + "_" + str(gridC) +"_cp_masks.tif")
+    return os.path.join(input_dir, str(gridR) + "_" + str(gridC) +"_cp_masks.tif")
 
 def mask_index(gridR, gridC, gridSize):
     return gridR * gridSize + gridC
@@ -73,8 +99,6 @@ for gridR in range(grid):
         masks[index] = mask
 
         non_zero_vals =  masks[index][ masks[index] > 0]
-        first_val = non_zero_vals[0]
-        last_val = non_zero_vals[-1]
 
         print(gridR, gridC)
         print(offset)

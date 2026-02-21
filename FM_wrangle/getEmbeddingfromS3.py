@@ -1,11 +1,3 @@
-import pandas as pd
-import scanpy as sc
-import numpy as np
-import os, re, sys
-import boto3
-from collections import defaultdict
-import h5py
-import warnings
 import argparse
 
 parser = argparse.ArgumentParser()
@@ -19,6 +11,16 @@ parser.add_argument(
 
 args = parser.parse_args()
 embedding = args.embedding
+
+
+import pandas as pd
+import scanpy as sc
+import numpy as np
+import os, re, sys
+import boto3
+from collections import defaultdict
+import h5py
+import warnings
 
 #NRP bucket
 #bucket = "braingeneersdev"
@@ -253,6 +255,7 @@ for file in others:
         file_id = file.replace("_uce_adata.h5ad", "")  # such as f0f0d7c4-3bec-428e-9539-c99d36548d96_(cell_0_1000)
     elif embedding == "scimilarity":
         file_id = file.replace("_scimilarity_adata.h5ad", "")  # such as f0f0d7c4-3bec-428e-9539-c99d36548d96_(cell_0_1000)
+
     if result_exists(file_id, results_dir, embedding):
         print (f"{file_id} {embedding} results already available in results dir")
         continue
@@ -288,7 +291,7 @@ for dataset_id, data in grouped.items():
         print (f"{dataset_id} {embedding} results already available in results dir")
         continue
     if result_exists(dataset_id, duplicate_dir, embedding):
-        print (f"{file_id} {embedding} results already available in duplicate dir")
+        print (f"{dataset_id} {embedding} results already available in duplicate dir")
         continue
 
     embedding_path_npy, obs_path = process_files_via_h5( 

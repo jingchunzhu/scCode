@@ -1,0 +1,90 @@
+{
+  "8e10f1c4-8e98-41e5-b65f-8cd89a887122": {
+    "cell_type": {
+      "value": "supercluster_term",
+      "type": "column"
+    },
+    "collection_doi_label": "Siletti et al. (2023) Science",
+    "dataset_title": "All neurons"
+  },
+  "b165f033-9dec-468a-9248-802fc6902a74": {
+    "cell_type": {
+      "value": "supercluster_term",
+      "type": "column"
+    },
+    "collection_doi_label": "Siletti et al. (2023) Science",
+    "dataset_title": "All non-neuronal cells"
+  },
+  "6f7fd0f1-a2ed-4ff1-80d3-33dde731cbc3": {
+    "organism": {
+      "value": "Homo sapiens",
+      "type": "static"
+    },
+    "organism_ontology_term_id": {
+      "value": "NCBITaxon:9606",
+      "type": "static"
+    },
+    "collection_doi_label": "Gabitto et al. (2024) Nat Neurosci",
+    "dataset_title": "Whole Taxonomy - DLPFC: Seattle Alzheimer's Disease Atlas (SEA-AD)"
+  },
+  "c2876b1b-06d8-4d96-a56b-5304f815b99a": {
+    "organism": {
+      "value": "Homo sapiens",
+      "type": "static"
+    },
+    "organism_ontology_term_id": {
+      "value": "NCBITaxon:9606",
+      "type": "static"
+    },
+    "collection_doi_label": "Gabitto et al. (2024) Nat Neurosci",
+    "dataset_title": "Whole Taxonomy - MTG: Seattle Alzheimer's Disease Atlas (SEA-AD)"
+  },    
+  "d7f5d8d0-6150-48d7-b094-c34286ad11a1": {
+    "organism": {
+      "value": "Homo sapiens",
+      "type": "static"
+    },
+    "organism_ontology_term_id": {
+      "value": "NCBITaxon:9606",
+      "type": "static"
+    },
+    "collection_doi_label": "He et al. (2024) Nature",
+    "dataset_title": "HNOCA Extended: The Human Neural Organoid Atlas"
+  },
+  "aa369999-a034-4ad9-b459-8a93c86ea77b": {
+    "organism": {
+      "value": "Homo sapiens",
+      "type": "static"
+    },
+    "organism_ontology_term_id": {
+      "value": "NCBITaxon:9606",
+      "type": "static"
+    },
+    "collection_doi_label": "Wang et al. (2025) Nature",
+    "dataset_title": "snMultiome data of the developing human neocortex"
+  },    
+  "ucsc-2e934674-0669-4d8a-9faa-9d37078f8bb6": {
+    "cell_type": {
+      "value": "Group",
+      "type": "column"
+    },
+    "cell_type_ontology_term_id": {
+      "value": "CL:ID_group",
+      "type": "column"
+    },
+    "collection_doi_label": "BICAN Basal Ganglia",
+    "dataset_title": "Human_HMBA_basalganglia_AIT_pre-print"
+  },
+  "ucsc-4291fc35-aa8f-43fb-b7f8-987770cebdc7": {
+    "cell_type": {
+      "value": "Group",
+      "type": "column"
+    },
+    "cell_type_ontology_term_id": {
+      "value": "CL:ID_group",
+      "type": "column"
+    },
+    "collection_doi_label": "BICAN Basal Ganglia",
+    "dataset_title": "Macaque_HMBA_basalganglia_AIT_pre-print"
+  }
+}
